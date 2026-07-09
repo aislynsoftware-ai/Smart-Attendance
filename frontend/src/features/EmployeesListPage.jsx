@@ -82,7 +82,7 @@ export default function EmployeesListPage() {
   const loadEmployees = async () => {
     setLoading(true);
     try {
-      const res = await client.get("/employees/");
+      const res = await client.get("/employees");
       console.log("Loaded employees:", res.data); // Debug log
       setList(res.data);
       setError("");

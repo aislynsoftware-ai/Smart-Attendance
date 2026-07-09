@@ -280,7 +280,7 @@ if (previewRes.data.image) {
     setSuccess("");
 
     try {
-      await client.post("/employees/", {
+      await client.post("/employees", {
         ...form,
         office_id: Number(form.office_id)
       });
