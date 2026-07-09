@@ -50,7 +50,7 @@ def apply_leave(
 # =====================================================
 # Approve Leave (HR / Admin)
 # =====================================================
-@router.put("/approve/{leave_id}")
+@router.put("/{leave_id}/approve")
 def approve_leave(
     leave_id: int,
     db: Session = Depends(get_db),
@@ -74,7 +74,7 @@ def approve_leave(
 # =====================================================
 # Reject Leave (HR / Admin)
 # =====================================================
-@router.put("/reject/{leave_id}")
+@router.put("/{leave_id}/reject")
 def reject_leave(
     leave_id: int,
     db: Session = Depends(get_db),
