@@ -23,6 +23,8 @@ DEVICE_ID = "Aislyn001"
 DEVICE_API_KEY = ""
 DB_NAME = "smart_attendance.db"
 
+finger_lock = threading.Lock()
+
 
 def device_headers():
     return {"X-Device-ID": DEVICE_ID, "X-API-Key": DEVICE_API_KEY}
@@ -30,11 +32,11 @@ def device_headers():
 
 def open_door():
     try:
-        print(">>> Door Relay ON")
+        print(">>> Door Open")
         GPIO.output(RELAY_PIN, GPIO.HIGH)
         time.sleep(5)
         GPIO.output(RELAY_PIN, GPIO.LOW)
-        print(">>> Door Relay OFF")
+        print(">>> Door Close")
     except Exception as e:
         print("Relay Error:", e)
 
@@ -62,29 +64,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print(">>> Local DB Ready")
-
-
-def sync_worker():
-    while True:
-        try:
-            conn = sqlite3.connect(DB_NAME)
-            conn.row_factory = sqlite3.Row
-            unsynced = conn.execute("SELECT * FROM attendance_logs WHERE synced = 0").fetchall()
-            if unsynced:
-                records = []
-                for r in unsynced:
-                    records.append({"emp_id": r["emp_id"], "date": r["date"], "check_in": r["time"], "source": r["type"]})
-                payload = {"device_id": DEVICE_ID, "records": records}
-                res = requests.post(f"{API_URL}/hardware/sync-attendance", json=payload, headers=device_headers(), timeout=10)
-                if res.status_code == 200:
-                    conn.execute("UPDATE attendance_logs SET synced = 1 WHERE synced = 0")
-                    conn.commit()
-                    print(f">>> [SYNC] Uploaded {len(records)} offline records")
-            conn.close()
-        except Exception:
-            pass
-        time.sleep(30)
 
 
 def save_attendance_local(emp_id, bio_type):
@@ -97,127 +76,228 @@ def save_attendance_local(emp_id, bio_type):
 
 def mark_attendance(emp_id, name, bio_type):
     save_attendance_local(emp_id, bio_type)
-    print(f"\n>>> ATTENDANCE: {name} ({emp_id}) via {bio_type}")
+    print(f">>> ATTENDANCE: {name} ({emp_id}) - {bio_type}")
     open_door()
     payload = {"identifier": emp_id, "type": bio_type.lower(), "device_id": DEVICE_ID}
     try:
         res = requests.post(f"{API_URL}/hardware/verify-and-record", json=payload, headers=device_headers(), timeout=5)
         if res.status_code == 200:
-            print(">>> [ONLINE] Attendance recorded on server")
             conn = sqlite3.connect(DB_NAME)
             conn.execute("UPDATE attendance_logs SET synced = 1 WHERE emp_id = ? AND time = ?",
                          (emp_id, time.strftime('%H:%M:%S')))
             conn.commit()
             conn.close()
     except Exception:
-        print(">>> [OFFLINE] Attendance saved locally")
+        pass
+
+
+def sync_worker():
+    while True:
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            conn.row_factory = sqlite3.Row
+            unsynced = conn.execute("SELECT * FROM attendance_logs WHERE synced = 0").fetchall()
+            if unsynced:
+                records = []
+                for r in unsynced:
+                    records.append({"emp_id": r["emp_id"], "date": r["date"], "check_in": r["time"], "source": r["type"]})
+                res = requests.post(f"{API_URL}/hardware/sync-attendance",
+                                    json={"device_id": DEVICE_ID, "records": records},
+                                    headers=device_headers(), timeout=10)
+                if res.status_code == 200:
+                    conn.execute("UPDATE attendance_logs SET synced = 1 WHERE synced = 0")
+                    conn.commit()
+                    print(f">>> [SYNC] Uploaded {len(records)} offline records")
+            conn.close()
+        except Exception:
+            pass
+        time.sleep(30)
+
+
+def download_employees():
+    try:
+        res = requests.get(f"{API_URL}/hardware/download/employees-csv",
+                           params={"device_id": DEVICE_ID, "api_key": DEVICE_API_KEY}, timeout=10)
+        if res.status_code == 200:
+            lines = res.text.strip().split("\n")
+            if len(lines) < 2:
+                return
+            conn = sqlite3.connect(DB_NAME)
+            conn.execute("DELETE FROM employees")
+            for line in lines[1:]:
+                vals = line.split(",")
+                if len(vals) >= 3:
+                    conn.execute("""INSERT OR REPLACE INTO employees
+                        (emp_id, name, rfid, fingerprint1, fingerprint2, fingerprint3, fingerprint4, fingerprint5,
+                         face1, face2, face3, face4, face5)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 (vals[1] if len(vals) > 1 else "",
+                                  vals[2] if len(vals) > 2 else "",
+                                  vals[14] if len(vals) > 14 else "",
+                                  vals[15] if len(vals) > 15 else "",
+                                  vals[16] if len(vals) > 16 else "",
+                                  vals[17] if len(vals) > 17 else "",
+                                  vals[18] if len(vals) > 18 else "",
+                                  "",
+                                  vals[19] if len(vals) > 19 else "",
+                                  vals[20] if len(vals) > 20 else "",
+                                  vals[21] if len(vals) > 21 else "",
+                                  vals[22] if len(vals) > 22 else "",
+                                  vals[23] if len(vals) > 23 else ""))
+            conn.commit()
+            conn.close()
+            print(f">>> Downloaded {len(lines)-1} employees")
+    except Exception as e:
+        print(f">>> Download error: {e}")
 
 
 # ─────────────────────────────────────────────
-# ENROLLMENT MODE (triggered by dashboard command)
+# ENROLLMENT (Dashboard Command)
 # ─────────────────────────────────────────────
-def enroll_rfid():
-    print("\n[ENROLL RFID] Tap card now...")
+def enroll_rfid(emp_id):
+    print(f"[ENROLL RFID] {emp_id} - Tap card...")
     reader = SimpleMFRC522()
     uid, _ = reader.read()
     uid_str = str(uid)
-    print(f">>> RFID Captured: {uid_str}")
-    res = requests.post(f"{API_URL}/hardware/upload", json={
-        "emp_id": current_cmd["emp_id"], "type": "rfid", "data": uid_str
-    }, headers=device_headers(), timeout=10)
-    if res.status_code == 200:
-        print(">>> RFID Enrolled Successfully")
-    return uid_str
+    requests.post(f"{API_URL}/hardware/upload",
+                  json={"emp_id": emp_id, "type": "rfid", "data": uid_str},
+                  headers=device_headers(), timeout=10)
+    print(f">>> RFID Enrolled: {uid_str}")
 
 
-def enroll_finger(index):
-    print(f"\n[ENROLL FINGER {index}/4] Place finger...")
-    f = PyFingerprint('/dev/serial0', 57600, 0xFFFFFFFF, 0x00000000)
-    if not f.verifyPassword():
-        print(">>> Sensor password error")
-        return False
-    while not f.readImage():
-        time.sleep(0.1)
-    f.convertImage(0x01)
-    time.sleep(1.5)
-    print("Place same finger again...")
-    while not f.readImage():
-        time.sleep(0.1)
-    f.convertImage(0x02)
-    if f.compareCharacteristics() == 0:
-        print(">>> Fingerprint mismatch")
-        return False
-    f.createTemplate()
-    position = f.storeTemplate()
-    print(f">>> Finger {index} stored at slot {position}")
-    res = requests.post(f"{API_URL}/hardware/upload", json={
-        "emp_id": current_cmd["emp_id"], "type": "finger", "index": index, "data": str(position)
-    }, headers=device_headers(), timeout=10)
-    return res.status_code == 200
+def enroll_finger(emp_id, index):
+    with finger_lock:
+        print(f"\n[ENROLL FINGER {index}/4] {emp_id}")
+        try:
+            f = PyFingerprint('/dev/serial0', 57600, 0xFFFFFFFF, 0x00000000)
+            if not f.verifyPassword():
+                print(">>> Sensor password error")
+                return
+
+            print(f">>> Place Finger {index} - Scan 1...")
+            while not f.readImage():
+                time.sleep(0.1)
+            f.convertImage(0x01)
+            print(f">>> Finger {index} - Scan 1 Done")
+
+            print(f">>> Remove Finger {index}...")
+            time.sleep(1.5)
+
+            print(f">>> Place Same Finger {index} Again - Scan 2...")
+            while not f.readImage():
+                time.sleep(0.1)
+            f.convertImage(0x02)
+            print(f">>> Finger {index} - Scan 2 Done")
+
+            if f.compareCharacteristics() == 0:
+                print(f">>> Finger {index} - Mismatch! Try again from dashboard")
+                return
+
+            f.createTemplate()
+            position = f.storeTemplate()
+            print(f">>> Finger {index}/4 - Saved (slot {position})")
+
+            requests.post(f"{API_URL}/hardware/upload",
+                          json={"emp_id": emp_id, "type": "finger", "index": index, "data": str(position)},
+                          headers=device_headers(), timeout=10)
+            print(f">>> Finger {index}/4 - Uploaded to Server ✅")
+        except Exception as e:
+            print(f">>> Finger enrollment error: {e}")
 
 
-def enroll_face(index):
-    print(f"\n[ENROLL FACE {index}/5] Look at camera...")
-    picam2 = Picamera2()
-    config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "XBGR8888"})
-    picam2.configure(config)
-    picam2.start()
-    time.sleep(1)
-    frame = picam2.capture_array()
-    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    faces = face_recognition.face_locations(rgb)
-    if len(faces) == 0:
-        print(">>> No face detected")
+def enroll_face(emp_id, index):
+    print(f"[ENROLL FACE {index}/5] {emp_id} - Look at camera...")
+    try:
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "XBGR8888"})
+        picam2.configure(config)
+        picam2.start()
+        time.sleep(1)
+        frame = picam2.capture_array()
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        faces = face_recognition.face_locations(rgb)
+        if len(faces) == 0:
+            print(">>> No face detected")
+            picam2.stop()
+            picam2.close()
+            return
+        enc = face_recognition.face_encodings(rgb, faces)[0].tolist()
+        _, buffer = cv2.imencode(".jpg", frame_bgr)
+        img_b64 = base64.b64encode(buffer).decode()
         picam2.stop()
         picam2.close()
-        return False
-    enc = face_recognition.face_encodings(rgb, faces)[0].tolist()
-    _, buffer = cv2.imencode(".jpg", frame_bgr)
-    img_b64 = base64.b64encode(buffer).decode()
-    picam2.stop()
-    picam2.close()
-    print(f">>> Face {index} Captured")
-    res = requests.post(f"{API_URL}/hardware/upload", json={
-        "emp_id": current_cmd["emp_id"], "type": "face", "index": index,
-        "data": json.dumps(enc), "image": img_b64
-    }, headers=device_headers(), timeout=10)
-    return res.status_code == 200
+        requests.post(f"{API_URL}/hardware/upload",
+                      json={"emp_id": emp_id, "type": "face", "index": index,
+                            "data": json.dumps(enc), "image": img_b64},
+                      headers=device_headers(), timeout=10)
+        print(f">>> Face {index} Enrolled")
+    except Exception as e:
+        print(f">>> Face enrollment error: {e}")
 
 
-current_cmd = {"emp_id": None, "command": 0, "index": None}
-
-
-def check_pending_command():
+# ─────────────────────────────────────────────
+# ATTENDANCE MODE FUNCTIONS
+# ─────────────────────────────────────────────
+def attendance_rfid_blocking():
     try:
-        res = requests.get(f"{API_URL}/hardware/pending-command", headers=device_headers(), timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("command") and data["command"] != 0:
-                return data
-    except Exception:
-        pass
-    return None
+        reader = SimpleMFRC522()
+        uid, _ = reader.read()
+        uid_str = str(uid)
+        conn = sqlite3.connect(DB_NAME)
+        emp = conn.execute("SELECT emp_id, name FROM employees WHERE rfid = ?", (uid_str,)).fetchone()
+        conn.close()
+        if emp:
+            mark_attendance(emp[0], emp[1], "RFID")
+        else:
+            res = requests.post(f"{API_URL}/hardware/verify-and-record",
+                                json={"identifier": uid_str, "type": "rfid", "device_id": DEVICE_ID},
+                                headers=device_headers(), timeout=10)
+            if res.status_code == 200:
+                open_door()
+    except Exception as e:
+        print(f"RFID Error: {e}")
 
 
-def process_enrollment_command(cmd):
-    global current_cmd
-    current_cmd = cmd
-    print(f"\n=== ENROLLMENT MODE for {cmd['emp_id']} ===")
-    if cmd["command"] == 1:
-        enroll_rfid()
-    elif cmd["command"] == 2 and cmd.get("index"):
-        enroll_finger(cmd["index"])
-    elif cmd["command"] == 3 and cmd.get("index"):
-        enroll_face(cmd["index"])
-    else:
-        print(f">>> Unknown command: {cmd}")
-    current_cmd = {"emp_id": None, "command": 0, "index": None}
+def attendance_finger_blocking():
+    with finger_lock:
+        try:
+            f = PyFingerprint('/dev/serial0', 57600, 0xFFFFFFFF, 0x00000000)
+            if not f.verifyPassword():
+                return
+
+            while not f.readImage():
+                time.sleep(0.1)
+
+            f.convertImage(0x01)
+            result = f.searchTemplate()
+            position = result[0]
+
+            if position == -1:
+                print(">>> Finger not recognized")
+                return
+
+            print(f">>> Finger matched slot: {position}")
+
+            conn = sqlite3.connect(DB_NAME)
+            emp = conn.execute("""SELECT emp_id, name FROM employees
+                                  WHERE fingerprint1=? OR fingerprint2=? OR fingerprint3=?
+                                  OR fingerprint4=? OR fingerprint5=?""",
+                               (position, position, position, position, position)).fetchone()
+            conn.close()
+
+            if emp:
+                mark_attendance(emp[0], emp[1], "FINGERPRINT")
+            else:
+                res = requests.post(f"{API_URL}/hardware/verify-and-record",
+                                    json={"identifier": str(position), "type": "fingerprint", "device_id": DEVICE_ID},
+                                    headers=device_headers(), timeout=10)
+                if res.status_code == 200:
+                    open_door()
+        except Exception as e:
+            print(f"Finger Error: {e}")
 
 
-# ─────────────────────────────────────────────
-# ATTENDANCE MODE
-# ─────────────────────────────────────────────
 def load_face_db():
     encodings, names, ids = [], [], []
     conn = sqlite3.connect(DB_NAME)
@@ -233,79 +313,90 @@ def load_face_db():
     return encodings, names, ids
 
 
-def do_rfid():
-    print("\n[RFID] Tap card...")
-    reader = SimpleMFRC522()
-    uid, _ = reader.read()
-    uid_str = str(uid)
-    print(f"UID: {uid_str}")
-    conn = sqlite3.connect(DB_NAME)
-    emp = conn.execute("SELECT emp_id, name FROM employees WHERE rfid = ?", (uid_str,)).fetchone()
-    conn.close()
-    if emp:
-        mark_attendance(emp[0], emp[1], "RFID")
-    else:
-        print(">>> Not found locally, checking server...")
-        payload = {"identifier": uid_str, "type": "rfid", "device_id": DEVICE_ID}
+# ─────────────────────────────────────────────
+# BACKGROUND THREADS
+# ─────────────────────────────────────────────
+def rfid_thread():
+    while True:
         try:
-            res = requests.post(f"{API_URL}/hardware/verify-and-record", json=payload, headers=device_headers(), timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                print(f">>> Server: {data.get('name')} - {data.get('status')}")
-                open_door()
-        except Exception:
-            print(">>> Not found on server either")
-
-
-def do_finger():
-    print("\n[FINGER] Place finger...")
-    f = PyFingerprint('/dev/serial0', 57600, 0xFFFFFFFF, 0x00000000)
-    if not f.verifyPassword():
-        print("Sensor error")
-        return
-    while not f.readImage():
-        time.sleep(0.1)
-    f.convertImage(0x01)
-    result = f.searchTemplate()
-    position = result[0]
-    if position == -1:
-        print(">>> Finger not recognized")
-        return
-    print(f">>> Matched slot: {position}")
-    conn = sqlite3.connect(DB_NAME)
-    emp = conn.execute("""SELECT emp_id, name FROM employees
-                          WHERE fingerprint1=? OR fingerprint2=? OR fingerprint3=?
-                          OR fingerprint4=? OR fingerprint5=?""",
-                       (position, position, position, position, position)).fetchone()
-    conn.close()
-    if emp:
-        mark_attendance(emp[0], emp[1], "FINGERPRINT")
-    else:
-        print(">>> Found in sensor but not in local DB")
-        payload = {"identifier": str(position), "type": "fingerprint", "device_id": DEVICE_ID}
-        try:
-            res = requests.post(f"{API_URL}/hardware/verify-and-record", json=payload, headers=device_headers(), timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                print(f">>> Server: {data.get('name')}")
-                open_door()
+            attendance_rfid_blocking()
         except Exception:
             pass
+        time.sleep(0.5)
 
 
-def do_face():
-    print("\n[FACE] Look at camera...")
+def finger_thread():
+    while True:
+        attendance_finger_blocking()
+        time.sleep(0.5)
+
+
+def command_poll_thread():
+    global known_encodings, known_names, known_ids, picam2_active
+    while True:
+        try:
+            res = requests.get(f"{API_URL}/hardware/pending-command", headers=device_headers(), timeout=5)
+            if res.status_code == 200:
+                cmd = res.json()
+                if cmd.get("command") and cmd["command"] != 0:
+                    emp_id = cmd["emp_id"]
+
+                    if picam2_active:
+                        picam2.stop()
+                        picam2.close()
+                        picam2_active = False
+
+                    if cmd["command"] == 1:
+                        enroll_rfid(emp_id)
+                    elif cmd["command"] == 2 and cmd.get("index"):
+                        enroll_finger(emp_id, cmd["index"])
+                    elif cmd["command"] == 3 and cmd.get("index"):
+                        enroll_face(emp_id, cmd["index"])
+
+                    requests.post(f"{API_URL}/hardware/reset", headers=device_headers(), timeout=5)
+                    download_employees()
+                    known_encodings, known_names, known_ids = load_face_db()
+
+                    picam2.start()
+                    picam2_active = True
+                    time.sleep(1)
+        except Exception:
+            pass
+        time.sleep(2)
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+known_encodings = []
+known_names = []
+known_ids = []
+picam2 = None
+picam2_active = False
+
+
+def main():
+    global known_encodings, known_names, known_ids, picam2, picam2_active
+
+    print(">>> Smart Attendance Terminal Starting...")
+    init_db()
+    download_employees()
+
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "XBGR8888"})
     picam2.configure(config)
     picam2.start()
+    picam2_active = True
 
     known_encodings, known_names, known_ids = load_face_db()
-    print(f"Loaded {len(known_encodings)} face encodings")
+    print(f">>> Loaded {len(known_encodings)} face encodings")
 
-    face_detect_time = None
-    hold_time = 2
-    identified = False
+    threading.Thread(target=sync_worker, daemon=True).start()
+    threading.Thread(target=rfid_thread, daemon=True).start()
+    threading.Thread(target=finger_thread, daemon=True).start()
+    threading.Thread(target=command_poll_thread, daemon=True).start()
+
+    face_seen_time = None
 
     try:
         while True:
@@ -316,128 +407,33 @@ def do_face():
             face_locs = face_recognition.face_locations(rgb_small)
             face_encs = face_recognition.face_encodings(rgb_small, face_locs)
 
-            if len(face_encs) > 0:
-                if face_detect_time is None:
-                    face_detect_time = time.time()
-                elapsed = time.time() - face_detect_time
-                cv2.putText(frame_bgr, f"Hold {int(hold_time - elapsed)}" if elapsed < hold_time else "Recognizing...",
-                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-                if elapsed >= hold_time and not identified:
+            if len(face_encs) > 0 and len(known_encodings) > 0:
+                if face_seen_time is None:
+                    face_seen_time = time.time()
+                if time.time() - face_seen_time >= 2:
                     matches = face_recognition.compare_faces(known_encodings, face_encs[0], tolerance=0.45)
                     if True in matches:
                         idx = matches.index(True)
-                        identified = True
-                        _, buffer = cv2.imencode(".jpg", frame_bgr)
-                        img_b64 = base64.b64encode(buffer).decode()
                         mark_attendance(known_ids[idx], known_names[idx], "FACE")
-                        picam2.stop()
-                        picam2.close()
-                        cv2.destroyAllWindows()
-                        return
+                        face_seen_time = None
+                        time.sleep(3)
                     else:
                         print(">>> Face not recognized")
-                        identified = True
-                        picam2.stop()
-                        picam2.close()
-                        cv2.destroyAllWindows()
-                        return
+                        face_seen_time = None
             else:
-                face_detect_time = None
+                face_seen_time = None
 
-            cv2.imshow("Face Recognition", frame_bgr)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-    except Exception as e:
-        print("Camera Error:", e)
+
+    except KeyboardInterrupt:
+        print("\n>>> Shutting down...")
     finally:
-        picam2.stop()
-        picam2.close()
+        if picam2:
+            picam2.stop()
+            picam2.close()
         cv2.destroyAllWindows()
-
-
-def download_employees():
-    try:
-        res = requests.get(f"{API_URL}/hardware/download/employees-csv",
-                           params={"device_id": DEVICE_ID, "api_key": DEVICE_API_KEY}, timeout=10)
-        if res.status_code == 200:
-            content = res.text
-            lines = content.strip().split("\n")
-            if len(lines) < 2:
-                return
-            headers = lines[0].split(",")
-            conn = sqlite3.connect(DB_NAME)
-            conn.execute("DELETE FROM employees")
-            for line in lines[1:]:
-                vals = line.split(",")
-                if len(vals) >= 3:
-                    eid = vals[1] if len(vals) > 1 else ""
-                    name = vals[2] if len(vals) > 2 else ""
-                    rfid = vals[14] if len(vals) > 14 else ""
-                    f1 = vals[15] if len(vals) > 15 else ""
-                    f2 = vals[16] if len(vals) > 16 else ""
-                    f3 = vals[17] if len(vals) > 17 else ""
-                    f4 = vals[18] if len(vals) > 18 else ""
-                    img1 = vals[19] if len(vals) > 19 else ""
-                    img2 = vals[20] if len(vals) > 20 else ""
-                    img3 = vals[21] if len(vals) > 21 else ""
-                    img4 = vals[22] if len(vals) > 22 else ""
-                    img5 = vals[23] if len(vals) > 23 else ""
-                    emb1 = vals[24] if len(vals) > 24 else ""
-                    emb2 = vals[25] if len(vals) > 25 else ""
-                    emb3 = vals[26] if len(vals) > 26 else ""
-                    emb4 = vals[27] if len(vals) > 27 else ""
-                    emb5 = vals[28] if len(vals) > 28 else ""
-                    conn.execute("""INSERT OR REPLACE INTO employees
-                        (emp_id, name, rfid, fingerprint1, fingerprint2, fingerprint3, fingerprint4, fingerprint5,
-                         face1, face2, face3, face4, face5)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                 (eid, name, rfid, f1, f2, f3, f4, "", img1, img2, img3, img4, img5))
-            conn.commit()
-            conn.close()
-            print(f">>> Downloaded {len(lines)-1} employees from server")
-    except Exception as e:
-        print(f">>> Download error: {e}")
-
-
-def main():
-    init_db()
-    threading.Thread(target=sync_worker, daemon=True).start()
-    download_employees()
-    print("\n========== FINAL TEST - Unified Terminal ==========")
-    print("  - Dashboard commands → Enrollment mode")
-    print("  - Manual scan → Attendance mode")
-    print("===================================================\n")
-
-    while True:
-        print("\n1. RFID")
-        print("2. Fingerprint")
-        print("3. Face Recognition")
-        print("4. Sync Employees from Server")
-        print("5. Exit")
-
-        choice = input("\nSelect: ")
-
-        if choice == "5":
-            break
-
-        cmd = check_pending_command()
-        if cmd:
-            process_enrollment_command(cmd)
-            download_employees()
-        else:
-            if choice == "1":
-                do_rfid()
-            elif choice == "2":
-                do_finger()
-            elif choice == "3":
-                do_face()
-            elif choice == "4":
-                download_employees()
-            else:
-                print("Invalid option")
-
-    GPIO.cleanup()
+        GPIO.cleanup()
 
 
 if __name__ == "__main__":

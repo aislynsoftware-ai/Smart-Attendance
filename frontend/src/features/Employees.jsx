@@ -136,38 +136,29 @@ export default function AddEmployeePage() {
       
       // Check if command was processed (command reset to 0)
       if (res.data.command === 0) {
-        // Get the captured data
+        // Re-fetch employee to get updated timestamp from server
+        const updatedEmp = await fetchEmployeeRFID(false);
+        
         if (enrollingBio.type === 'face' && enrollingBio.index) {
           try {
-            // IMPORTANT: Add emp_id as query parameter
             const previewRes = await client.get(`/hardware/face-preview/${enrollingBio.index}?emp_id=${form.emp_id}`);
-            console.log("Face preview response:", previewRes.data);
             
-           // Inside your useEffect tracking hardware response
-if (previewRes.data.image) {
-  // Check if the string already has the prefix, if not, add it
-  const base64Image = previewRes.data.image.startsWith('data:image') 
-    ? previewRes.data.image 
-    : `data:image/jpeg;base64,${previewRes.data.image}`;
-
-  setFacePreviews(prev => ({
-    ...prev,
-    [enrollingBio.index]: base64Image
-  }));
-  
-  setSuccess(`Face ${enrollingBio.index} captured successfully!`);
-
+            if (previewRes.data.image) {
+              const base64Image = previewRes.data.image.startsWith('data:image') 
+                ? previewRes.data.image 
+                : `data:image/jpeg;base64,${previewRes.data.image}`;
+              setFacePreviews(prev => ({
+                ...prev,
+                [enrollingBio.index]: base64Image
+              }));
             } else {
-              // If no image but data was saved, still show success
               setFacePreviews(prev => ({
                 ...prev,
                 [enrollingBio.index]: 'captured'
               }));
-              setSuccess(`Face ${enrollingBio.index} data saved!`);
             }
+            setSuccess(`Face ${enrollingBio.index} captured successfully!`);
           } catch (err) {
-            console.error("Error fetching face preview:", err);
-            // Still mark as captured even if preview fails
             setFacePreviews(prev => ({
               ...prev,
               [enrollingBio.index]: 'captured'
@@ -180,13 +171,10 @@ if (previewRes.data.image) {
             ...prev,
             [enrollingBio.index]: true
           }));
-          
           setSuccess(`Fingerprint ${enrollingBio.index} captured successfully!`);
         } 
         else if (enrollingBio.type === 'rfid') {
-          // AUTOMATICALLY fetch RFID data
-          const found = await fetchEmployeeRFID(true);
-          if (!found) {
+          if (!updatedEmp) {
             setError("RFID captured but data not found");
             setTimeout(() => setError(""), 3000);
           }
