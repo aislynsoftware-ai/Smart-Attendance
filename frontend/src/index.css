@@ -40,11 +40,18 @@
 
   --border-primary: #e7e5e4;
   --border-light: #f5f5f4;
+  --border-color: #e7e5e4;
 
   --accent: #f97316;
   --accent-hover: #ea580c;
   --accent-light: #ffedd5;
   --accent-very-light: #fff7ed;
+  --orange-accent: #f97316;
+  --orange-bg: #ffedd5;
+
+  --card-bg: #ffffff;
+  --input-bg: #ffffff;
+  --skeleton-bg: #e7e5e4;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
