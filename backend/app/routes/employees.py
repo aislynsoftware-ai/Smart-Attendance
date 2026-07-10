@@ -246,16 +246,10 @@ def update_biometric(
     if biometric_type == "rfid":
         emp.rfid_uid = data
 
-    elif biometric_type == "fingerprint":
-        emp.fingerprint_template = data.encode()
-
-    elif biometric_type == "face":
-        emp.face_embedding = data.encode()
-
     else:
         raise HTTPException(
             status_code=400,
-            detail="Invalid biometric type"
+            detail="Invalid biometric type. Use /hardware/upload for fingerprint/face."
         )
 
     db.commit()

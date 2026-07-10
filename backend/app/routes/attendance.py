@@ -1,5 +1,6 @@
 from datetime import datetime, date
 
+import pytz
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -10,18 +11,7 @@ from app.models.attendance import Attendance
 from app.models.employee import Employee
 from app.models.device import Device
 
-router = APIRouter(
-    prefix="/attendance",
-    tags=["Attendance"]
-)
-from datetime import date, datetime
-import pytz 
-
 IST = pytz.timezone('Asia/Kolkata')
-
-#
-
-
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 

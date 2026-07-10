@@ -22,11 +22,16 @@ GPIO.output(RELAY_PIN, GPIO.LOW)
 # -----------------------------
 # CONFIG
 # -----------------------------
-API_URL = "http://192.168.0.109:8000"
+API_URL = "https://aislyntech-attendance.hf.space"
 VERIFY_ENDPOINT = f"{API_URL}/hardware/verify-and-record"
 SYNC_ENDPOINT = f"{API_URL}/hardware/sync-attendance"
 DEVICE_ID = "Aislyn001"
-DB_NAME = "office_system.db"  
+DEVICE_API_KEY = ""  # Set this to your device API key
+DB_NAME = "office_system.db"
+
+
+def device_headers():
+    return {"X-Device-ID": DEVICE_ID, "X-API-Key": DEVICE_API_KEY}
 
 
 
@@ -80,7 +85,7 @@ def sync_worker():
                     })
                 
                 payload = {"device_id": DEVICE_ID, "records": records}
-                response = requests.post(SYNC_ENDPOINT, json=payload, timeout=10)
+                response = requests.post(SYNC_ENDPOINT, json=payload, headers=device_headers(), timeout=10)
                 
                 if response.status_code == 200:
                     conn.execute("UPDATE attendance_logs SET synced = 1 WHERE synced = 0")
@@ -126,7 +131,7 @@ def record_attendance(emp_id, emp_name, bio_type, identifier=None):
     }
     
     try:
-        res = requests.post(VERIFY_ENDPOINT, json=payload, timeout=5)
+        res = requests.post(VERIFY_ENDPOINT, json=payload, headers=device_headers(), timeout=5)
         if res.status_code == 200:
             conn = sqlite3.connect(DB_NAME)
             conn.execute("UPDATE attendance_logs SET synced = 1 WHERE emp_id = ? AND time = ?", (emp_id, curr_time))
@@ -333,7 +338,7 @@ def call_server_fallback(identifier, bio_type):
     """Old server logic maintained for face recognition or unknown IDs"""
     payload = {"identifier": identifier, "type": bio_type, "device_id": DEVICE_ID}
     try:
-        response = requests.post(VERIFY_ENDPOINT, json=payload, timeout=10)
+        response = requests.post(VERIFY_ENDPOINT, json=payload, headers=device_headers(), timeout=10)
         if response.status_code == 200:
             data = response.json()
             print(data)

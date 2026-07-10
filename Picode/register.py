@@ -19,7 +19,13 @@ print(">>> Enrollment Terminal Started")
 # CONFIG
 # -----------------------------
 DB_NAME = "office_system.db"
-API_URL = "http://192.168.1.6:8000"
+API_URL = "https://aislyntech-attendance.hf.space"
+DEVICE_ID = "Aislyn001"
+DEVICE_API_KEY = ""  # Set this to your device API key
+
+
+def device_headers():
+    return {"X-Device-ID": DEVICE_ID, "X-API-Key": DEVICE_API_KEY}
 
 WIDTH, HEIGHT = 480, 800
 FPS = 60
@@ -82,7 +88,7 @@ def sync_pending_records():
                     "faces": [row[f"face{i}"] for i in range(1,6) if row[f"face{i}"]]
                 }
                 
-                res = requests.put(f"{API_URL}/hardware/assign-biometric", json=payload, timeout=5)
+                res = requests.put(f"{API_URL}/hardware/assign-biometric", json=payload, headers=device_headers(), timeout=5)
                 if res.status_code == 200:
                     conn.execute("UPDATE employees SET synced = 1 WHERE emp_id = ?", (row["emp_id"],))
                     conn.commit()
@@ -100,7 +106,7 @@ def fetch_employees_worker():
     global all_employees, status_msg
     print(">>> Fetching employees from server")
     try:
-        res = requests.get(f"{API_URL}/hardware/employees-pending", timeout=5)
+        res = requests.get(f"{API_URL}/hardware/employees-pending", headers=device_headers(), timeout=5)
         if res.status_code == 200:
             all_employees = res.json()
             # Insert/Update local list so we can work offline next time
@@ -295,7 +301,7 @@ def save_and_upload():
         }
 
         try:
-            res = requests.put(f"{API_URL}/hardware/assign-biometric", json=payload, timeout=5)
+            res = requests.put(f"{API_URL}/hardware/assign-biometric", json=payload, headers=device_headers(), timeout=5)
             if res.status_code == 200:
                 conn = sqlite3.connect(DB_NAME)
                 conn.execute("UPDATE employees SET synced=1 WHERE emp_id=?", (current_emp["emp_id"],))

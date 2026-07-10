@@ -72,11 +72,14 @@ def enroll_fingerprint(
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    emp.fingerprint_template = data.fingerprint_template
+    if data.index not in [1, 2, 3, 4]:
+        raise HTTPException(status_code=400, detail="Fingerprint index must be 1-4")
+
+    setattr(emp, f"fingerprint_{data.index}", data.data)
 
     db.commit()
 
-    return {"message": "Fingerprint enrolled successfully"}
+    return {"message": f"Fingerprint {data.index} enrolled successfully"}
 
 
 # =====================================================
@@ -97,8 +100,13 @@ def enroll_face(
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    emp.face_embedding = data.face_embedding
+    if data.index not in [1, 2, 3, 4, 5]:
+        raise HTTPException(status_code=400, detail="Face index must be 1-5")
+
+    setattr(emp, f"face_embedding_{data.index}", data.embedding)
+    if data.image:
+        setattr(emp, f"face_image_{data.index}", data.image)
 
     db.commit()
 
-    return {"message": "Face enrolled successfully"}
+    return {"message": f"Face {data.index} enrolled successfully"}
