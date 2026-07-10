@@ -19,8 +19,8 @@ GPIO.setup(RELAY_PIN, GPIO.OUT)
 GPIO.output(RELAY_PIN, GPIO.LOW)
 
 API_URL = "https://aislyntech-attendance.hf.space"
-DEVICE_ID = "Aislyn001"
-DEVICE_API_KEY = ""
+DEVICE_ID = "AT002"
+DEVICE_API_KEY = "203e500e05fa0b2b610a5c446f239e2033ec2c3e1ccc5050f320600ad9c60b7e"
 DB_NAME = "smart_attendance.db"
 
 finger_lock = threading.Lock()

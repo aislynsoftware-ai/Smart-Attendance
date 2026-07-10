@@ -26,7 +26,7 @@ API_URL = "https://aislyntech-attendance.hf.space"
 VERIFY_ENDPOINT = f"{API_URL}/hardware/verify-and-record"
 SYNC_ENDPOINT = f"{API_URL}/hardware/sync-attendance"
 DEVICE_ID = "Aislyn001"
-DEVICE_API_KEY = ""  # Set this to your device API key
+DEVICE_API_KEY = ""
 DB_NAME = "smart_attendance.db"
 
 

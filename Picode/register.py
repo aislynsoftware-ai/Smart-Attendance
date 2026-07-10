@@ -21,7 +21,7 @@ print(">>> Enrollment Terminal Started")
 DB_NAME = "smart_attendance.db"
 API_URL = "https://aislyntech-attendance.hf.space"
 DEVICE_ID = "Aislyn001"
-DEVICE_API_KEY = ""  # Set this to your device API key
+DEVICE_API_KEY = ""
 
 
 def device_headers():

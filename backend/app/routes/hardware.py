@@ -7,12 +7,13 @@ from datetime import datetime, date, time
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, engine
 from app.models.employee import Employee
 from app.models.attendance import Attendance
 from app.models.device import Device
 from app.core.auth import get_current_user
 
+from sqlalchemy import text
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -366,6 +367,23 @@ def employees_pending(
         }
         for e in employees
     ]
+
+
+# ----------------------------
+# TRUNCATE ALL EMPLOYEES & ATTENDANCE (JWT AUTH)
+# ----------------------------
+
+@router.post("/truncate-all")
+def truncate_all(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    db.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+    db.execute(text("TRUNCATE TABLE attendance"))
+    db.execute(text("TRUNCATE TABLE employees"))
+    db.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+    db.commit()
+    return {"message": "Truncated employees and attendance tables"}
 
 
 # ----------------------------

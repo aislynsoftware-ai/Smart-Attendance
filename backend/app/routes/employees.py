@@ -143,6 +143,19 @@ def update_employee(
 
 
 # =====================================================
+# Delete All Employees (Admin Only) — MUST be before /{emp_id}
+# =====================================================
+@router.delete("/all")
+def delete_all_employees(
+    db: Session = Depends(get_db),
+    user=Depends(require_admin_or_hr)
+):
+    count = db.query(Employee).delete()
+    db.commit()
+    return {"message": f"Deleted {count} employees"}
+
+
+# =====================================================
 # Deactivate Employee (Soft Delete)
 # =====================================================
 @router.delete("/{emp_id}")
